@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import struct, hashlib
 from ecdsa import SigningKey, SECP256k1
-from ecdsa.util import sigencode_der
+from ecdsa.util import sigencode_der, sigdecode_der
 from Crypto.Hash import RIPEMD160
 
 # ----- Helper Functions -----
@@ -33,8 +33,16 @@ def base58_decode(s):
     return num.to_bytes(25, "big")
 
 
+order = SECP256k1.order
+def normalize_sig(der_sig):
+    r, s = sigdecode_der(der_sig, order)
+    if s > order // 2:
+        s = order - s
+    return sigencode_der(r, s, order)
+
+
 version = struct.pack("<I", 1)
-prev_txid = bytes(32)  # all-zero txid
+prev_txid = bytes(32)  
 prev_index = struct.pack("<I", 0)
 sequence = bytes.fromhex("ffffffff")
 
@@ -55,12 +63,10 @@ locktime = struct.pack("<I", 0)
 
 
 def segwit_sighash():
- 
     input_value = 100000
     hash_prevouts = hash256(prev_txid + prev_index)
     hash_sequence = hash256(sequence)
     hash_outputs = hash256(txout)
-
     scriptCode = ser_varint(len(witness_script)) + witness_script
     sighash_type = struct.pack("<I", 1)  
     preimage = (
@@ -79,29 +85,30 @@ def segwit_sighash():
 
 sighash = segwit_sighash()
 
-
+# ----- Signing -----
 privkeys = [
     "39dc0a9f0b185a2ee56349691f34716e6e0cda06a7f9707742ac113c4e2317bf",
     "5077ccd9c558b7d04a81920d38aa11b4a9f9de3b23fab45c3ef28039920fdd6d"
 ]
 
-signatures = [
-    SigningKey.from_string(bytes.fromhex(pk), curve=SECP256k1).sign_digest(sighash, sigencode=sigencode_der) + b'\x01'
-    for pk in privkeys
-]
+signatures = []
+for pk in privkeys:
+    sk = SigningKey.from_string(bytes.fromhex(pk), curve=SECP256k1)
+    der_sig = sk.sign_digest(sighash, sigencode=sigencode_der)
+    der_sig = normalize_sig(der_sig)
+    signatures.append(der_sig + b'\x01')
 
 def push_data(data):
     return ser_varint(len(data)) + data
 
 
 scriptSig = push_data(witness_program)
-
-
 txin = prev_txid + prev_index + ser_varint(len(scriptSig)) + scriptSig + sequence
 
 
-witness_items = [b"", signatures[0], signatures[1], witness_script]
+witness_items = [b"", signatures[1], signatures[0], witness_script]
 witness = ser_varint(len(witness_items)) + b"".join(push_data(item) for item in witness_items)
+
 
 tx_final = (
     version +
@@ -111,7 +118,6 @@ tx_final = (
     witness +
     locktime
 )
-
 
 with open("out.txt", "w") as f:
     f.write(tx_final.hex())
